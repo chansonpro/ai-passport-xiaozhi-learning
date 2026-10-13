@@ -1,20 +1,20 @@
-#include "wifi_board.h"
-#include "display/lcd_display.h"
-#include "codecs/es8311_audio_codec.h"
 #include "application.h"
-#include "button.h"
-#include "config.h"
 #include "assets/lang_config.h"
+#include "button.h"
+#include "codecs/es8311_audio_codec.h"
+#include "config.h"
 #include "cw2017_battery_monitor.h"
+#include "display/lcd_display.h"
 #include "learning_ui.h"
 #include "mcp_server.h"
+#include "wifi_board.h"
 
-#include <esp_log.h>
-#include <esp_lcd_panel_vendor.h>
-#include <button_adc.h>
-#include <esp_adc/adc_oneshot.h>
 #include <driver/i2c_master.h>
 #include <driver/spi_common.h>
+#include <esp_adc/adc_oneshot.h>
+#include <esp_lcd_panel_vendor.h>
+#include <esp_log.h>
+#include <button_adc.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -28,6 +28,34 @@ enum {
     kAdcButtonNum,
 };
 
+// The common LCD theme code targets lv_screen_active(). This board has a
+// second learning screen, so font/theme rebinding must target the chat screen
+// before releasing the previous font owner (including background activation).
+class AiPassportDisplay : public SpiLcdDisplay {
+public:
+    using SpiLcdDisplay::SpiLcdDisplay;
+    void SetTheme(Theme* theme) override {
+        DisplayLockGuard lock(this);
+        if (!lock)
+            return;
+        auto* active = lv_screen_active();
+        auto* chat = container_ ? lv_obj_get_screen(container_) : active;
+        if (active != chat)
+            lv_screen_load(chat);
+        LcdDisplay::SetTheme(theme);
+        if (active != chat)
+            lv_screen_load(active);
+    }
+};
+
+class LearningAdcButton : public Button {
+public:
+    explicit LearningAdcButton(const button_adc_config_t& config) : Button(nullptr) {
+        const button_config_t timing = {.long_press_time = 650, .short_press_time = 0};
+        ESP_ERROR_CHECK(iot_button_new_adc_device(&timing, &config, &button_handle_));
+    }
+};
+
 class AiPassportBoard : public WifiBoard {
 private:
     i2c_master_bus_handle_t codec_i2c_bus_;
@@ -36,6 +64,7 @@ private:
     LcdDisplay* display_;
     Cw2017BatteryMonitor* battery_;
     LearningUi* learning_ui_ = nullptr;
+    bool key_held_[kAdcButtonNum] = {};
 
     void InitializeCodecI2c() {
         i2c_master_bus_config_t i2c_bus_cfg = {
@@ -46,9 +75,10 @@ private:
             .glitch_ignore_cnt = 7,
             .intr_priority = 0,
             .trans_queue_depth = 0,
-            .flags = {
-                .enable_internal_pullup = 1,
-            },
+            .flags =
+                {
+                    .enable_internal_pullup = 1,
+                },
         };
         ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_cfg, &codec_i2c_bus_));
 
@@ -85,11 +115,25 @@ private:
     //   长按上/下键保留音量调节。
     void RouteLearningButton(int button_id, LearningUi::Press press) {
         auto& app = Application::GetInstance();
+        if (press == LearningUi::Press::kLongPress && button_id != kAdcButtonOk) {
+            ChangeVolume(button_id == kAdcButtonUp ? 10 : -10);
+            return;
+        }
+        if (learning_ui_ != nullptr && learning_ui_->chat_mode() && !learning_ui_->active() &&
+            press == LearningUi::Press::kLongPress && button_id == kAdcButtonOk) {
+            learning_ui_->ReturnToLearning();
+            return;
+        }
         if (learning_ui_ != nullptr && learning_ui_->active()) {
-            auto button = button_id == kAdcButtonUp   ? LearningUi::Button::kUp
+            auto button = button_id == kAdcButtonUp     ? LearningUi::Button::kUp
                           : button_id == kAdcButtonDown ? LearningUi::Button::kDown
                                                         : LearningUi::Button::kOk;
             learning_ui_->HandleButton(button, press);
+            return;
+        }
+        if (press == LearningUi::Press::kClick && button_id == kAdcButtonOk &&
+            app.GetDeviceState() != kDeviceStateIdle) {
+            ToggleChat();
             return;
         }
         if (app.GetDeviceState() != kDeviceStateIdle) {
@@ -128,9 +172,28 @@ private:
             "self.learning.get_current_card",
             "获取孩子当前正在屏幕上看的学习卡片（唐诗或英语单词）。当孩子让你领读、"
             "讲解或陪练屏幕上的内容，或孩子刚从学习界面发起对话时，调用此工具了解上下文。",
-            PropertyList(),
-            [this](const PropertyList& properties) -> ToolResult {
+            PropertyList(), [this](const PropertyList& properties) -> ToolResult {
                 return learning_ui_->GetCurrentCardJson();
+            });
+        McpServer::GetInstance().AddTool(
+            "self.learning.control",
+            "控制设备英语乐园和古诗乐园的实际屏幕。孩子要求学英语/苹果/下一个词、学古诗/读一句/"
+            "背诗/听音找图时必须调用本工具，不能只口头答应。"
+            "action: "
+            "english=英语卡片；poem=静夜思跟读；recall=隐藏诗句背诵；quiz=四轮听音选图；next/"
+            "previous=下一项/上一项；play=重读或背诵提示；"
+            "answer=选择答案；home=学习首页。index默认-1；english的0..3对应apple/banana/cat/"
+            "dog；poem/recall的0..3对应静夜思四句；"
+            "answer的0是左图、1是右图，若孩子说物品名可先用get_current_"
+            "card获取左右选项。仅支持这四词和静夜思，不假装打开其他内容。"
+            "成功后请慢速简短朗读返回的say（英文用英文发音），不要同时请求本地播放；读完等待孩子。"
+            "答错可重试，答对后等孩子说下一题。"
+            "error表示操作没执行，应解释原因。学习画面在小智说话和听孩子说话时保持显示。",
+            PropertyList({Property("action", kPropertyTypeString).SetMaxLength(16),
+                          Property("index", kPropertyTypeInteger, -1, -1, 3)}),
+            [this](const PropertyList& properties) -> ToolResult {
+                return learning_ui_->ControlByVoice(properties["action"].value<std::string>(),
+                                                    properties["index"].value<int>());
             });
     }
 
@@ -152,38 +215,38 @@ private:
         adc_cfg.unit_id = ADC_UNIT_1;
         adc_cfg.adc_channel = ADC_CHANNEL_0;  // GPIO0
 
-        adc_cfg.button_index = kAdcButtonUp;      // UP:   ~0 mV
+        adc_cfg.button_index = kAdcButtonUp;  // UP:   ~0 mV
         adc_cfg.min = BSP_ADC_BUTTON_UP_MIN;
         adc_cfg.max = BSP_ADC_BUTTON_UP_MAX;
-        adc_button_[kAdcButtonUp] = new AdcButton(adc_cfg);
+        adc_button_[kAdcButtonUp] = new LearningAdcButton(adc_cfg);
 
-        adc_cfg.button_index = kAdcButtonDown;    // DOWN: ~300 mV
+        adc_cfg.button_index = kAdcButtonDown;  // DOWN: ~300 mV
         adc_cfg.min = BSP_ADC_BUTTON_DOWN_MIN;
         adc_cfg.max = BSP_ADC_BUTTON_DOWN_MAX;
-        adc_button_[kAdcButtonDown] = new AdcButton(adc_cfg);
+        adc_button_[kAdcButtonDown] = new LearningAdcButton(adc_cfg);
 
-        adc_cfg.button_index = kAdcButtonOk;      // OK:   ~595 mV
+        adc_cfg.button_index = kAdcButtonOk;  // OK:   ~595 mV
         adc_cfg.min = BSP_ADC_BUTTON_OK_MIN;
         adc_cfg.max = BSP_ADC_BUTTON_OK_MAX;
-        adc_button_[kAdcButtonOk] = new AdcButton(adc_cfg);
+        adc_button_[kAdcButtonOk] = new LearningAdcButton(adc_cfg);
 
         // Button callbacks run on the button task; schedule all UI/audio
         // work onto the main task so LVGL and codec access stay on one thread.
         for (int i = 0; i < kAdcButtonNum; i++) {
             auto* btn = adc_button_[i];
-            btn->OnClick([this, i]() {
+            // Process every short release, including rapid repeated taps.
+            // A 650 ms hold fires once and suppresses its release action.
+            btn->OnPressDown([this, i]() { key_held_[i] = false; });
+            btn->OnLongPress([this, i]() {
+                key_held_[i] = true;
+                Application::GetInstance().Schedule(
+                    [this, i]() { RouteLearningButton(i, LearningUi::Press::kLongPress); });
+            });
+            btn->OnPressUp([this, i]() {
+                if (key_held_[i])
+                    return;
                 Application::GetInstance().Schedule(
                     [this, i]() { RouteLearningButton(i, LearningUi::Press::kClick); });
-            });
-            btn->OnLongPress([this, i]() {
-                Application::GetInstance().Schedule([this, i]() {
-                    RouteLearningButton(i, LearningUi::Press::kLongPress);
-                });
-            });
-            btn->OnDoubleClick([this, i]() {
-                Application::GetInstance().Schedule([this, i]() {
-                    RouteLearningButton(i, LearningUi::Press::kDoubleClick);
-                });
             });
         }
     }
@@ -241,10 +304,14 @@ private:
             {0xD0, {0xA7, 0xA1}, 2, 0},
             {0xD0, {0xA4, 0xA1}, 2, 0},
             {0xD6, {0xA1}, 1, 0},
-            {0xE0, {0xD0, 0x04, 0x08, 0x0A, 0x09, 0x05, 0x2D, 0x43,
-                    0x49, 0x09, 0x16, 0x15, 0x26, 0x2B}, 14, 0},
-            {0xE1, {0xD0, 0x03, 0x09, 0x0A, 0x0A, 0x06, 0x2E, 0x44,
-                    0x40, 0x3A, 0x15, 0x15, 0x26, 0x2A}, 14, 10},
+            {0xE0,
+             {0xD0, 0x04, 0x08, 0x0A, 0x09, 0x05, 0x2D, 0x43, 0x49, 0x09, 0x16, 0x15, 0x26, 0x2B},
+             14,
+             0},
+            {0xE1,
+             {0xD0, 0x03, 0x09, 0x0A, 0x0A, 0x06, 0x2E, 0x44, 0x40, 0x3A, 0x15, 0x15, 0x26, 0x2A},
+             14,
+             10},
         };
         for (const auto& cmd : kSt7789P3InitCommands) {
             esp_lcd_panel_io_tx_param(panel_io, cmd.command, cmd.data, cmd.data_length);
@@ -259,10 +326,9 @@ private:
         esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
         esp_lcd_panel_disp_on_off(panel, true);
 
-        display_ = new SpiLcdDisplay(panel_io, panel,
-                                     DISPLAY_WIDTH, DISPLAY_HEIGHT,
-                                     DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
-                                     DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+        display_ = new AiPassportDisplay(panel_io, panel, DISPLAY_WIDTH, DISPLAY_HEIGHT,
+                                         DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X,
+                                         DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
     }
 
 public:
@@ -277,23 +343,13 @@ public:
 
     virtual AudioCodec* GetAudioCodec() override {
         static Es8311AudioCodec audio_codec(
-            codec_i2c_bus_,
-            I2C_NUM_0,
-            AUDIO_INPUT_SAMPLE_RATE,
-            AUDIO_OUTPUT_SAMPLE_RATE,
-            AUDIO_I2S_GPIO_MCLK,
-            AUDIO_I2S_GPIO_BCLK,
-            AUDIO_I2S_GPIO_WS,
-            AUDIO_I2S_GPIO_DOUT,
-            AUDIO_I2S_GPIO_DIN,
-            AUDIO_CODEC_PA_PIN,
-            AUDIO_CODEC_ES8311_ADDR);
+            codec_i2c_bus_, I2C_NUM_0, AUDIO_INPUT_SAMPLE_RATE, AUDIO_OUTPUT_SAMPLE_RATE,
+            AUDIO_I2S_GPIO_MCLK, AUDIO_I2S_GPIO_BCLK, AUDIO_I2S_GPIO_WS, AUDIO_I2S_GPIO_DOUT,
+            AUDIO_I2S_GPIO_DIN, AUDIO_CODEC_PA_PIN, AUDIO_CODEC_ES8311_ADDR);
         return &audio_codec;
     }
 
-    virtual Display* GetDisplay() override {
-        return display_;
-    }
+    virtual Display* GetDisplay() override { return display_; }
 
     virtual Backlight* GetBacklight() override {
         static PwmBacklight backlight(DISPLAY_BACKLIGHT_PIN, DISPLAY_BACKLIGHT_OUTPUT_INVERT);

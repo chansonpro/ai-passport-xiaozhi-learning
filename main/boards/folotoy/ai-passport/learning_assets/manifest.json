@@ -1,0 +1,86 @@
+[
+  {
+    "file": "voice0.ogg",
+    "text": "apple",
+    "voice": "Daniel",
+    "source": "macOS local speech synthesis",
+    "bytes": 1488
+  },
+  {
+    "file": "voice1.ogg",
+    "text": "banana",
+    "voice": "Daniel",
+    "source": "macOS local speech synthesis",
+    "bytes": 1922
+  },
+  {
+    "file": "voice2.ogg",
+    "text": "cat",
+    "voice": "Daniel",
+    "source": "macOS local speech synthesis",
+    "bytes": 1565
+  },
+  {
+    "file": "voice3.ogg",
+    "text": "dog",
+    "voice": "Daniel",
+    "source": "macOS local speech synthesis",
+    "bytes": 1396
+  },
+  {
+    "file": "voice4.ogg",
+    "text": "Find the apple",
+    "voice": "Daniel",
+    "source": "macOS local speech synthesis",
+    "bytes": 2749
+  },
+  {
+    "file": "voice5.ogg",
+    "text": "Find the banana",
+    "voice": "Daniel",
+    "source": "macOS local speech synthesis",
+    "bytes": 3036
+  },
+  {
+    "file": "voice6.ogg",
+    "text": "Find the cat",
+    "voice": "Daniel",
+    "source": "macOS local speech synthesis",
+    "bytes": 2811
+  },
+  {
+    "file": "voice7.ogg",
+    "text": "Find the dog",
+    "voice": "Daniel",
+    "source": "macOS local speech synthesis",
+    "bytes": 2521
+  },
+  {
+    "file": "voice8.ogg",
+    "text": "床前明月光",
+    "voice": "Tingting",
+    "source": "macOS local speech synthesis",
+    "bytes": 4077
+  },
+  {
+    "file": "voice9.ogg",
+    "text": "疑是地上霜",
+    "voice": "Tingting",
+    "source": "macOS local speech synthesis",
+    "bytes": 3842
+  },
+  {
+    "file": "voice10.ogg",
+    "text": "举头望明月",
+    "voice": "Tingting",
+    "source": "macOS local speech synthesis",
+    "bytes": 3643
+  },
+  {
+    "file": "voice11.ogg",
+    "text": "低头思故乡",
+    "voice": "Tingting",
+    "source": "macOS local speech synthesis",
+    "bytes": 3813
+  }
+]
