@@ -52,3 +52,42 @@ independent ADC buttons (the same pattern as the ESP-BOX-Lite).
   pull-up. Re-measure with the Button page if thresholds drift.
 - CW2017 presence is optional; without the chip the status bar shows no
   battery level and the board keeps working.
+
+## 小智学堂 · 儿童双语学习融合固件 (Learning UI)
+
+Fusion of community plays #72 (XiaoZhi chatbot), #967 (Tang 300 poems) and
+#1189 (toddler English words) into one firmware: offline learning browser
+on the screen + XiaoZhi voice guidance that can read the current card.
+
+### Files
+
+| File | Purpose |
+| --- | --- |
+| `learning_ui.h/cc` | LVGL learning UI (home menu / poem / recite challenge / word card) |
+| `learning_tangshi_data.c/h` | 300 Tang poems (ported from GavinSheng/ai-passport) |
+| `learning_english_words.c/h` | 60 toddler English words in 6 themes |
+| `learning_font_16.c` | 16px CJK font (2558 glyphs, Noto Sans SC subset) |
+| `learning_font_en_28.c` | 28px Latin+IPA font |
+| `gen_learning_font.py` | Font regeneration script (lv_font_conv) |
+
+### Controls (idle state)
+
+- **UP/DOWN click**: open the learning home menu (小智学堂)
+- **UP/DOWN long-press**: volume +/- (kept from stock firmware)
+- Poem page: UP/DOWN click scrolls, double-click switches poem, OK asks XiaoZhi,
+  long-press OK returns home. Double-click the menu entry for recite challenge.
+- Word page: UP/DOWN click flips cards, OK asks XiaoZhi, long-press returns.
+- When a conversation starts, the learning UI auto-hides; the chat screen
+  comes back.
+
+### MCP tool
+
+`self.learning.get_current_card` — lets the cloud LLM query which poem or
+word the child is looking at, so XiaoZhi can lead recitation, explain, and
+play word games around the on-screen content.
+
+### Build
+
+```sh
+python scripts/build.py folotoy/ai-passport --name ai-passport --language zh-CN
+```

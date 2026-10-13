@@ -6,6 +6,8 @@
 #include "config.h"
 #include "assets/lang_config.h"
 #include "cw2017_battery_monitor.h"
+#include "learning_ui.h"
+#include "mcp_server.h"
 
 #include <esp_log.h>
 #include <esp_lcd_panel_vendor.h>
@@ -33,6 +35,7 @@ private:
     adc_oneshot_unit_handle_t adc_handle_ = nullptr;
     LcdDisplay* display_;
     Cw2017BatteryMonitor* battery_;
+    LearningUi* learning_ui_ = nullptr;
 
     void InitializeCodecI2c() {
         i2c_master_bus_config_t i2c_bus_cfg = {
@@ -76,6 +79,61 @@ private:
         app.ToggleChatState();
     }
 
+    // 学习模式与对话模式的按键路由（运行在主任务）。
+    // - 学习界面激活时：三键全部交给学习界面。
+    // - Idle 且学习界面未激活：上/下键打开学习主页；OK 键开始对话；
+    //   长按上/下键保留音量调节。
+    void RouteLearningButton(int button_id, LearningUi::Press press) {
+        auto& app = Application::GetInstance();
+        if (learning_ui_ != nullptr && learning_ui_->active()) {
+            auto button = button_id == kAdcButtonUp   ? LearningUi::Button::kUp
+                          : button_id == kAdcButtonDown ? LearningUi::Button::kDown
+                                                        : LearningUi::Button::kOk;
+            learning_ui_->HandleButton(button, press);
+            return;
+        }
+        if (app.GetDeviceState() != kDeviceStateIdle) {
+            return;
+        }
+        switch (press) {
+            case LearningUi::Press::kClick:
+                if (button_id == kAdcButtonOk) {
+                    ToggleChat();
+                } else {
+                    // 上/下键一键进入学习主页，方便孩子发现
+                    learning_ui_->Show();
+                }
+                break;
+            case LearningUi::Press::kLongPress:
+                if (button_id == kAdcButtonUp) {
+                    ChangeVolume(10);
+                } else if (button_id == kAdcButtonDown) {
+                    ChangeVolume(-10);
+                } else {
+                    learning_ui_->Show();
+                }
+                break;
+            case LearningUi::Press::kDoubleClick:
+            default:
+                break;
+        }
+    }
+
+    void InitializeLearningUi() {
+        learning_ui_ = new LearningUi(display_);
+
+        // MCP 工具：让小智知道孩子屏幕上正在看的内容（唐诗/单词），
+        // 从而围绕当前卡片领读、讲解、陪练。
+        McpServer::GetInstance().AddTool(
+            "self.learning.get_current_card",
+            "获取孩子当前正在屏幕上看的学习卡片（唐诗或英语单词）。当孩子让你领读、"
+            "讲解或陪练屏幕上的内容，或孩子刚从学习界面发起对话时，调用此工具了解上下文。",
+            PropertyList(),
+            [this](const PropertyList& properties) -> ToolResult {
+                return learning_ui_->GetCurrentCardJson();
+            });
+    }
+
     void InitializeButtons() {
         for (int i = 0; i < kAdcButtonNum; i++) {
             adc_button_[i] = nullptr;
@@ -111,32 +169,23 @@ private:
 
         // Button callbacks run on the button task; schedule all UI/audio
         // work onto the main task so LVGL and codec access stay on one thread.
-        auto up = adc_button_[kAdcButtonUp];
-        up->OnClick([this]() {
-            Application::GetInstance().Schedule([this]() { ChangeVolume(10); });
-        });
-        up->OnLongPress([this]() {
-            Application::GetInstance().Schedule([this]() {
-                GetAudioCodec()->SetOutputVolume(100);
-                GetDisplay()->ShowNotification(Lang::Strings::MAX_VOLUME);
+        for (int i = 0; i < kAdcButtonNum; i++) {
+            auto* btn = adc_button_[i];
+            btn->OnClick([this, i]() {
+                Application::GetInstance().Schedule(
+                    [this, i]() { RouteLearningButton(i, LearningUi::Press::kClick); });
             });
-        });
-
-        auto down = adc_button_[kAdcButtonDown];
-        down->OnClick([this]() {
-            Application::GetInstance().Schedule([this]() { ChangeVolume(-10); });
-        });
-        down->OnLongPress([this]() {
-            Application::GetInstance().Schedule([this]() {
-                GetAudioCodec()->SetOutputVolume(0);
-                GetDisplay()->ShowNotification(Lang::Strings::MUTED);
+            btn->OnLongPress([this, i]() {
+                Application::GetInstance().Schedule([this, i]() {
+                    RouteLearningButton(i, LearningUi::Press::kLongPress);
+                });
             });
-        });
-
-        auto ok = adc_button_[kAdcButtonOk];
-        ok->OnClick([this]() {
-            Application::GetInstance().Schedule([this]() { ToggleChat(); });
-        });
+            btn->OnDoubleClick([this, i]() {
+                Application::GetInstance().Schedule([this, i]() {
+                    RouteLearningButton(i, LearningUi::Press::kDoubleClick);
+                });
+            });
+        }
     }
 
     void InitializeSpi() {
@@ -221,6 +270,7 @@ public:
         InitializeCodecI2c();
         InitializeSpi();
         InitializeDisplay();
+        InitializeLearningUi();
         InitializeButtons();
         GetBacklight()->RestoreBrightness();
     }
