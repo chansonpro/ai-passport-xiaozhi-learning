@@ -15,7 +15,6 @@
 LearningUi::LearningUi(Display* display) : display_(display) {
     Settings saved("learning_v1");
     model_.word = std::clamp<int32_t>(saved.GetInt("word", 0), 0, 3);
-    model_.line = std::clamp<int32_t>(saved.GetInt("line", 0), 0, 3);
     // Board construction precedes audio initialization. Timer only queues work;
     // Application processes it after initializing the codec and audio tasks.
     DisplayLockGuard lock(display_);
@@ -64,7 +63,6 @@ void LearningUi::SavePosition() {
         return;
     Settings saved("learning_v1", true);
     saved.SetInt("word", model_.word);
-    saved.SetInt("line", model_.line);
     dirty_ = false;
 }
 void LearningUi::CancelAudio() {
@@ -106,7 +104,7 @@ void LearningUi::AudioWorker() {
             clip = pending_clip_;
             pending_clip_ = -1;
         }
-        if (clip < 0 || clip >= 12)
+        if (clip < 0 || clip >= 8)
             continue;
         demuxer->Reset();
         demuxer->OnPacket(
@@ -165,11 +163,11 @@ void LearningUi::HandleButton(Button button, Press press) {
         Render();
         return;
     }
-    const int word = model_.word, line = model_.line;
+    const int word = model_.word;
     if (!(model_.page == Page::kQuiz && press == Press::kClick && button != Button::kOk))
         CancelAudio();
     int clip = model_.Act(button, press);
-    if (word != model_.word || line != model_.line) {
+    if (word != model_.word) {
         dirty_ = true;
         save_after_ = esp_timer_get_time() + 1500000;
     }
@@ -185,8 +183,8 @@ void LearningUi::HandleButton(Button button, Press press) {
             Speak(clip);
     }
     Render();
-    ESP_LOGI("LearningUi", "v1 page=%d word=%d line=%d round=%d choice=%d correct=%d clip=%d",
-             int(model_.page), model_.word, model_.line, model_.round, model_.choice,
+    ESP_LOGI("LearningUi", "v1.2 page=%d word=%d round=%d choice=%d correct=%d clip=%d",
+             int(model_.page), model_.word, model_.round, model_.choice,
              model_.answered, clip);
 }
 void LearningUi::ReturnToLearning() {
@@ -286,16 +284,10 @@ std::string LearningUi::ControlByVoice(const std::string& action, int index) {
         say = learning::kWords[clip];
     else if (clip >= 4 && clip < 8)
         say = std::string("Find the ") + learning::kWords[clip - 4];
-    else if (clip >= 8)
-        say = learning::kLines[clip - 8];
     else if (action == "answer")
         say = model_.answered ? "找对啦！" : "再试一次";
-    else if (action == "recall")
-        say = "看着画面，试着背这一句。需要提示就说读这一句。";
     else if (action == "home")
-        say = "想学英语，还是古诗？";
-    else if (model_.selected == 1)
-        say = "可以说开始背诗，进入背诵。";
+        say = "我们开始学英语吧！";
     else
         say = "继续试试看。";
     cJSON_AddStringToObject(result, "say", say.c_str());
@@ -315,21 +307,14 @@ std::string LearningUi::GetCurrentCardJson() const {
     auto card = cJSON_CreateObject();
     if (!card)
         return "{}";
-    const char* names[] = {"none", "home", "word", "quiz", "poem", "poem_recite_challenge"};
+    const char* names[] = {"none", "home", "word", "quiz"};
     cJSON_AddStringToObject(card, "page", names[int(model_.page)]);
-    cJSON_AddStringToObject(card, "version", "learning-v1.1-voice");
+    cJSON_AddStringToObject(card, "version", "learning-v1.2-english");
     if (model_.page == Page::kWord) {
         cJSON_AddStringToObject(card, "word", learning::kWords[model_.word]);
         cJSON_AddStringToObject(card, "zh", learning::kChinese[model_.word]);
         cJSON_AddNumberToObject(card, "index", model_.word + 1);
         cJSON_AddNumberToObject(card, "total", 4);
-    } else if (model_.page == Page::kPoem || model_.page == Page::kRecall) {
-        cJSON_AddStringToObject(card, "title", "静夜思");
-        cJSON_AddStringToObject(card, "author", "李白");
-        cJSON_AddNumberToObject(card, "line", model_.line + 1);
-        cJSON_AddStringToObject(card, "text",
-                                model_.page == Page::kRecall ? "" : learning::kLines[model_.line]);
-        cJSON_AddBoolToObject(card, "revealed", model_.page != Page::kRecall);
     } else if (model_.page == Page::kQuiz) {
         cJSON_AddNumberToObject(card, "round", model_.round + 1);
         cJSON_AddBoolToObject(card, "answered", model_.answered);

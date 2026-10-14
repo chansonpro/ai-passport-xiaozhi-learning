@@ -166,26 +166,24 @@ private:
     void InitializeLearningUi() {
         learning_ui_ = new LearningUi(display_);
 
-        // MCP 工具：让小智知道孩子屏幕上正在看的内容（唐诗/单词），
+        // MCP 工具：让小智知道孩子屏幕上正在看的内容（英语单词/听音找图），
         // 从而围绕当前卡片领读、讲解、陪练。
         McpServer::GetInstance().AddTool(
             "self.learning.get_current_card",
-            "获取孩子当前正在屏幕上看的学习卡片（唐诗或英语单词）。当孩子让你领读、"
+            "获取孩子当前正在屏幕上看的学习卡片（英语单词或听音找图题目）。当孩子让你领读、"
             "讲解或陪练屏幕上的内容，或孩子刚从学习界面发起对话时，调用此工具了解上下文。",
             PropertyList(), [this](const PropertyList& properties) -> ToolResult {
                 return learning_ui_->GetCurrentCardJson();
             });
         McpServer::GetInstance().AddTool(
             "self.learning.control",
-            "控制设备英语乐园和古诗乐园的实际屏幕。孩子要求学英语/苹果/下一个词、学古诗/读一句/"
-            "背诗/听音找图时必须调用本工具，不能只口头答应。"
+            "控制设备英语乐园的实际屏幕。孩子要求学英语/苹果/下一个词、听音找图时必须调用本工具，"
+            "不能只口头答应。"
             "action: "
-            "english=英语卡片；poem=静夜思跟读；recall=隐藏诗句背诵；quiz=四轮听音选图；next/"
-            "previous=下一项/上一项；play=重读或背诵提示；"
+            "english=英语卡片；quiz=四轮听音选图；next/previous=下一项/上一项；play=重读或重听题目；"
             "answer=选择答案；home=学习首页。index默认-1；english的0..3对应apple/banana/cat/"
-            "dog；poem/recall的0..3对应静夜思四句；"
-            "answer的0是左图、1是右图，若孩子说物品名可先用get_current_"
-            "card获取左右选项。仅支持这四词和静夜思，不假装打开其他内容。"
+            "dog；answer的0是左图、1是右图，若孩子说物品名可先用get_current_"
+            "card获取左右选项。仅支持这四个词，不假装打开其他内容。"
             "成功后请慢速简短朗读返回的say（英文用英文发音），不要同时请求本地播放；读完等待孩子。"
             "答错可重试，答对后等孩子说下一题。"
             "error表示操作没执行，应解释原因。学习画面在小智说话和听孩子说话时保持显示。",

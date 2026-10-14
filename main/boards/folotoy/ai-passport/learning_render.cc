@@ -55,17 +55,15 @@ void Render(lv_obj_t* screen, const Model& m, int volume, bool speaking,
     char buf[96];
     snprintf(buf, sizeof(buf), "音量 %d%%", volume);
     Text(screen, buf, 148, 8, 80, &learning_v1_12, kMuted);
-    const char* hint = "上下选择 · 中间进入";
+    const char* hint = "中间进入 · 长按聊天";
     const char* phase = speaking ? "听一听…" : m.message;
     if (m.page == Page::kHome) {
         Text(screen, "每天一点点，学会好多点", 12, 37, 216, &learning_v1_12, kMuted);
-        Text(screen, "今天学什么？", 12, 59, 216, &learning_v1_22);
-        auto a = Box(screen, 16, 101, 208, 66, 0xe6eddc, 17, m.selected == 0);
-        Art(a, 0, 12, 13, 38);
-        Text(a, "英语乐园", 57, 22, 137);
-        auto b = Box(screen, 16, 180, 208, 66, 0xdfeef1, 17, m.selected == 1);
-        Art(b, 4, 12, 13, 38);
-        Text(b, "古诗乐园", 57, 22, 137);
+        Text(screen, "今天学英语！", 12, 59, 216, &learning_v1_22);
+        auto a = Box(screen, 16, 108, 208, 96, 0xe6eddc, 17);
+        Art(a, 0, 32, 24, 48);
+        Text(a, "英语乐园", 92, 37, 100, &learning_v1_22);
+        Text(a, "听一听 · 认一认 · 找一找", 20, 68, 168, &learning_v1_12, kMuted);
         Text(screen, assistant_status ? "长按中间：结束对话" : "长按中间：和小智聊天", 8, 260, 224,
              &learning_v1_12, kGreen);
     } else if (m.page == Page::kWord) {
@@ -86,21 +84,6 @@ void Render(lv_obj_t* screen, const Model& m, int volume, bool speaking,
         }
         Pill(screen, *phase ? phase : "中间键，听题目", 241);
         hint = m.answered ? "中间继续 · 长按返回" : "上下选图 · 中间确认 · 长按返回";
-    } else {
-        Text(screen, "静夜思 · 李白", 12, 36, 216, &learning_v1_12, kMuted);
-        Art(screen, m.page == Page::kRecall ? 5 : 4, 88, 53, 64);
-        Pill(screen, m.page == Page::kRecall ? "我会背 · 想一想" : "跟着读", 123);
-        Text(screen, m.page == Page::kRecall ? "···　···　···" : kLines[m.line], 8, 165, 224,
-             &learning_v1_22);
-        for (int i = 0; i < 4; ++i)
-            Box(screen, 94 + 15 * i, 207, 7, 7, i == m.line ? 0x63835a : 0xd9ddc9, 4);
-        Text(screen, *phase ? phase : "中间键，听这一句", 8, 224, 224, &learning_v1_12, kMuted);
-        if (m.line == 3) {
-            auto action = Box(screen, 16, 248, 208, 31, 0xe8eddb, 10, m.selected == 1);
-            Text(action, m.page == Page::kRecall ? "背完啦，再读一次 >" : "我会背 >", 0, 7, 208,
-                 &learning_v1_12);
-        }
-        hint = "上下换句 · 中间听 · 长按返回";
     }
     auto footer = Box(screen, 0, 286, 240, 34, 0xf0eddf);
     Text(footer, hint, 0, 10, 240, &learning_v1_12, 0x64756b);

@@ -12,26 +12,17 @@ inline bool VoiceCommand(Model& m, std::string_view action, int index, int& clip
     next.message = "";
     if (action == "english") {
         next.page = Page::kWord;
-        next.selected = 0;
         if (index >= 0)
             next.word = index;
         clip = next.word;
-    } else if (action == "poem" || action == "recall") {
-        next.recall_mode = action == "recall";
-        next.page = next.recall_mode ? Page::kRecall : Page::kPoem;
-        next.line = index >= 0 ? index : 0;
-        next.selected = 0;
-        if (!next.recall_mode)
-            clip = 8 + next.line;
     } else if (action == "quiz") {
         next.page = Page::kQuiz;
-        next.round = next.choice = next.selected = 0;
+        next.round = next.choice = 0;
         next.answered = false;
         next.question_heard = true;
         clip = 4;
     } else if (action == "home") {
         next.page = Page::kHome;
-        next.selected = 0;
     } else if (action == "next" || action == "previous") {
         if (next.page == Page::kHome || next.page == Page::kNone)
             return false;
@@ -43,14 +34,10 @@ inline bool VoiceCommand(Model& m, std::string_view action, int index, int& clip
             clip = next.Act(action == "next" ? Button::kDown : Button::kUp, Press::kClick);
             if (next.page == Page::kWord)
                 clip = next.word;
-            else if (next.page == Page::kPoem && next.selected == 0)
-                clip = 8 + next.line;
         }
     } else if (action == "play") {
         if (next.page == Page::kWord)
             clip = next.word;
-        else if (next.page == Page::kPoem || next.page == Page::kRecall)
-            clip = 8 + next.line;
         else if (next.page == Page::kQuiz && !next.answered) {
             clip = 4 + next.round;
             next.question_heard = true;
