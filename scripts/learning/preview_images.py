@@ -6,7 +6,7 @@ root=Path(sys.argv[1])
 for p in root.glob('*.rgb565'):
     vals=struct.unpack('<'+str(240*320)+'H',p.read_bytes())
     im=Image.new('RGB',(240,320));im.putdata([(((v>>11)&31)*255//31,((v>>5)&63)*255//63,(v&31)*255//31) for v in vals]);im.save(p.with_suffix('.png'))
-names=['home','apple','dog','quiz','correct','quiz2','poem','recall-button','recall','recall-end']
+names=['home','home-listening','apple','dog','quiz','correct','quiz2','return-word','return-home']
 sheet=Image.new('RGB',(5*260,2*355),'#e6e9de');draw=ImageDraw.Draw(sheet)
 for i,name in enumerate(names):
     x=(i%5)*260+10;y=(i//5)*355+20

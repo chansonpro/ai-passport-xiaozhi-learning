@@ -1,6 +1,5 @@
 import importlib.util
 import json
-import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -116,34 +115,24 @@ class BuildDefaultAssetsTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 BUILD.copy_wakenet_model(str(src), str(Path(directory) / "out"), "esp32c3")
 
-    def test_esp_hi_emoji_pack_matches_runtime_assets(self):
-        """ESP-HI must only pack AAF files that emoji_display actually loads."""
-        cmake = (ROOT / "main" / "CMakeLists.txt").read_text(encoding="utf-8")
-        display = (
-            ROOT / "main" / "boards" / "espressif" / "esp-hi" / "emoji_display.cc"
-        ).read_text(encoding="utf-8")
-
-        # Extract FILES_TO_DOWNLOAD block for ESP_HI.
-        match = re.search(
-            r"if\(CONFIG_BOARD_TYPE_ESP_HI\).*?set\(FILES_TO_DOWNLOAD(.*?)\)\n",
-            cmake,
-            re.S,
-        )
-        self.assertIsNotNone(match, "ESP_HI FILES_TO_DOWNLOAD not found in CMakeLists")
-        cmake_files = set(re.findall(r'"([^"]+\.aaf)"', match.group(1)))
-
-        runtime_files = set(re.findall(r'"([^"]+\.aaf)"', display))
-        self.assertTrue(runtime_files, "No AAF names found in emoji_display.cc")
-        self.assertEqual(
-            cmake_files,
-            runtime_files,
-            "ESP-HI CMake AAF pack list must match emoji_display runtime assets",
-        )
-        self.assertRegex(
-            cmake,
-            r"image_player/raw/[0-9a-f]{40}/test_apps/test_8bit",
-            "ESP-HI emoji URL should be pinned to a full image_player commit SHA",
-        )
+    def test_extra_asset_index_matches_copied_payloads(self):
+        """Asset indices must name exactly the files copied into the package."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, output = root / "source", root / "output"
+            (source / "nested").mkdir(parents=True)
+            output.mkdir()
+            payloads = {"idle.aaf": b"idle-animation", "talk.aaf": b"talk-animation"}
+            (source / "idle.aaf").write_bytes(payloads["idle.aaf"])
+            (source / "nested/talk.aaf").write_bytes(payloads["talk.aaf"])
+            (source / ".DS_Store").write_bytes(b"not-an-asset")
+            files = BUILD.process_extra_files(str(source), str(output))
+            BUILD.generate_index_json(str(output), None, None, None, extra_files=files)
+            index = json.loads((output / "index.json").read_text(encoding="utf-8"))
+            self.assertEqual(set(index["extra_files"]), set(payloads))
+            self.assertEqual(set(path.name for path in output.iterdir()), {*payloads, "index.json"})
+            for name, expected in payloads.items():
+                self.assertEqual((output / name).read_bytes(), expected)
 
 
 if __name__ == "__main__":

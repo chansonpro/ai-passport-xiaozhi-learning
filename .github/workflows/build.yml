@@ -13,6 +13,22 @@ permissions:
   contents: read
 
 jobs:
+  learning-regressions:
+    name: English learning and protocol regressions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run host build and asset tests
+        run: python3 -m unittest discover -s scripts/tests -v
+      - name: Build portable checks with sanitizers
+        run: |
+          cmake -S scripts/learning -B /tmp/learning-tests -DBUILD_PREVIEW=OFF -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          cmake --build /tmp/learning-tests
+          ctest --test-dir /tmp/learning-tests --output-on-failure
+
   prepare:
     name: Determine variants to build
     runs-on: ubuntu-latest
@@ -85,6 +101,15 @@ jobs:
         run: |
           source $IDF_PATH/export.sh
           python scripts/build.py ${{ matrix.board }} --name ${{ matrix.name }}
+
+      - name: Verify desktop rendering and local audio
+        run: |
+          cmake -S scripts/learning -B /tmp/learning-preview -DBUILD_PREVIEW=ON -DBUILD_TESTING=OFF
+          cmake --build /tmp/learning-preview --target learning_preview check_audio
+          /tmp/learning-preview/check_audio
+          /tmp/learning-preview/learning_preview --check-render
+          mkdir -p /tmp/learning-images
+          /tmp/learning-preview/learning_preview /tmp/learning-images
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

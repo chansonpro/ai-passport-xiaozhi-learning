@@ -530,15 +530,15 @@ void AudioService::OpusCodecTask() {
 }
 
 void AudioService::SetDecodeSampleRate(int sample_rate, int frame_duration) {
-    if (decoder_sample_rate_ == sample_rate && decoder_duration_ms_ == frame_duration) {
+    std::unique_lock<std::mutex> decoder_lock(decoder_mutex_);
+    if (opus_decoder_ != nullptr && decoder_sample_rate_ == sample_rate &&
+        decoder_duration_ms_ == frame_duration) {
         return;
     }
-    std::unique_lock<std::mutex> decoder_lock(decoder_mutex_);
     if (opus_decoder_ != nullptr) {
         esp_opus_dec_close(opus_decoder_);
         opus_decoder_ = nullptr;
     }
-    decoder_lock.unlock();
     esp_opus_dec_cfg_t opus_dec_cfg = OPUS_DEC_CFG(sample_rate, frame_duration);
     auto ret = esp_opus_dec_open(&opus_dec_cfg, sizeof(esp_opus_dec_cfg_t), &opus_decoder_);
     if (opus_decoder_ == nullptr) {
@@ -607,23 +607,35 @@ void AudioService::PushTaskToEncodeQueue(AudioTaskType type, std::vector<int16_t
 }
 
 bool AudioService::PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> packet, bool wait) {
+    if (!wait) {
+        return TryPushPacketToDecodeQueue(packet);
+    }
     std::unique_lock<std::mutex> lock(audio_queue_mutex_);
     const uint32_t generation = playback_generation_;
     if (audio_decode_queue_.size() >= MAX_DECODE_PACKETS_IN_QUEUE) {
-        if (wait) {
-            audio_queue_cv_.wait(lock, [this, generation]() {
-                return service_stopped_.load() || generation != playback_generation_ ||
-                       audio_decode_queue_.size() < MAX_DECODE_PACKETS_IN_QUEUE;
-            });
-        } else {
-            return false;
-        }
+        audio_queue_cv_.wait(lock, [this, generation]() {
+            return service_stopped_.load() || generation != playback_generation_ ||
+                   audio_decode_queue_.size() < MAX_DECODE_PACKETS_IN_QUEUE;
+        });
     }
     if (service_stopped_.load() || generation != playback_generation_) {
         return false;
     }
     playback_drained_notified_ = false;
     audio_decode_queue_.push_back(std::move(packet));
+    audio_queue_cv_.notify_all();
+    return true;
+}
+
+bool AudioService::TryPushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket>& packet) {
+    std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+    if (!packet || service_stopped_.load() ||
+        audio_decode_queue_.size() >= MAX_DECODE_PACKETS_IN_QUEUE) {
+        return false;
+    }
+    // @CfSecAICode 遵循消费金融安全编码 SEC-MEM-001 规范: 确认队列容量后才转移唯一所有权。
+    audio_decode_queue_.push_back(std::move(packet));
+    playback_drained_notified_ = false;
     audio_queue_cv_.notify_all();
     return true;
 }

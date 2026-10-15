@@ -171,3 +171,24 @@ MCP 调用由现有 McpServer 排入 Application 主任务，未修改 WebSocket
 - 词卡（apple/banana/cat/dog）、听音找图、`english`/`quiz`/`next`/`previous`/`play`/`answer`/`home` 指令全部保留。
 - 旧版 300 首诗与 60 词数据、旧字体文件已从构建移除（git 历史可恢复）。
 - NVS 只读写 `learning_v1/word`；`line` 键不再使用（旧值遗留无影响）。
+
+### v1.2 基础回归修复
+
+- 英语语音测试、桌面预览及 HTML 状态对照已同步到单入口、四词卡版本；移除的诗歌命令现在作为拒绝输入测试。
+- 返回、切词、隐藏学习页会取消等待云端关闭后的本地朗读；连续请求保留最新内容，避免重复发送中止/关闭动作。
+- WebSocket v2/v3 读取二进制头之前检查长度，校验版本、音频类型与实际载荷长度；不再修改传输层缓冲。
+
+无需设备或托管依赖的测试入口：
+
+```sh
+cmake -S scripts/learning -B /tmp/learning-tests -DBUILD_PREVIEW=OFF
+cmake --build /tmp/learning-tests
+ctest --test-dir /tmp/learning-tests --output-on-failure
+```
+
+需要 C++17、Python 3 和 Node.js。已有 `managed_components/lvgl__lvgl` 时，使用默认 `BUILD_PREVIEW=ON` 可构建预览与音频检查。
+`learning_preview <已存在的输出目录>` 生成当前英语流程的 9 张 RGB565 页面，`preview_images.py` 转成 PNG。
+CI 独立运行模型/语音/切换及带 ASan/UBSan 的报文测试；固件构建后还编译桌面预览并执行本地音频检查。
+
+聊天切换测试使用生产 `HandleButton`、`Tick`、`CancelAudio`、`Hide` 方法及模拟设备状态，覆盖返回、切词、隐藏、重复请求和只播放一次；不等价于实体按键和真实网络验证。
+通用 `scripts/tests` 仍包含已移除板型的历史假设，本次没有跳过或屏蔽这些测试；其失败与学习回归分别报告。

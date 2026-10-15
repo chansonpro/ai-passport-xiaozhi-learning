@@ -1,12 +1,12 @@
 #ifndef _WEBSOCKET_PROTOCOL_H_
 #define _WEBSOCKET_PROTOCOL_H_
 
-
 #include "protocol.h"
 
-#include <web_socket.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/event_groups.h>
+#include <web_socket.h>
+#include <atomic>
 
 #define WEBSOCKET_PROTOCOL_SERVER_HELLO_EVENT (1 << 0)
 
@@ -25,6 +25,10 @@ private:
     EventGroupHandle_t event_group_handle_;
     std::unique_ptr<WebSocket> websocket_;
     int version_ = 1;
+    std::atomic<uint32_t> connection_generation_{0};
+    std::atomic<bool> awaiting_hello_{false};
+
+    void ResetConnection();
 
     void ParseServerHello(const cJSON* root);
     bool SendText(const std::string& text) override;

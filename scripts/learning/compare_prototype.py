@@ -12,11 +12,11 @@ const script=html.match(/<script>([\s\S]*?)<\/script>/)[1];
 const element={classList:{toggle(){}},textContent:'',innerHTML:''};
 const context=vm.createContext({document:{querySelector:()=>({...element}),querySelectorAll:()=>[],addEventListener(){}},localStorage:{getItem:()=>null,setItem(){}},window:{},setTimeout,clearTimeout,console});
 vm.runInContext(script,context);
-vm.runInContext(`render=()=>{};let lastClip=-1;speak=(text)=>{phase='played';lastClip=words.findIndex(w=>w.en===text);if(lastClip<0){let q=words.findIndex(w=>'Find the '+w.en===text);lastClip=q>=0?4+q:8+lines.indexOf(text)}}`,context);
+vm.runInContext(`render=()=>{};let lastClip=-1;speak=(text)=>{phase='played';lastClip=words.findIndex(w=>w.en===text);if(lastClip<0){let q=words.findIndex(w=>'Find the '+w.en===text);lastClip=q>=0?4+q:-1}}`,context);
 const events=JSON.parse(fs.readFileSync(process.argv[3]));
 for(const [b,p] of events){
  vm.runInContext(`lastClip=-1;act('${['up','down','ok'][b]}',${p===1})`,context);
- console.log(vm.runInContext(`[page==='home'?1:page==='word'?2:page==='quiz'?3:mode===0?4:5,word,line,selected,round,choice,answered?1:0,mode,lastClip].join(' ')`,context));
+ console.log(vm.runInContext(`[page==='home'?1:page==='word'?2:3,word,round,choice,answered?1:0,questionHeard?1:0,lastClip].join(' ')`,context));
 }
 '''
 with tempfile.TemporaryDirectory() as td:

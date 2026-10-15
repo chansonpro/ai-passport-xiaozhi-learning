@@ -17,17 +17,23 @@ int main() {
         assert(VoiceCommand(m, "answer", round % 2, clip) && m.answered);
     }
     assert(VoiceCommand(m, "next", -1, clip) && m.page == Page::kWord && m.word == 0);
-    assert(VoiceCommand(m, "poem", 1, clip) && m.line == 1 && clip == 9);
-    assert(VoiceCommand(m, "next", -1, clip) && m.line == 2 && clip == 10);
-    assert(VoiceCommand(m, "recall", 2, clip) && m.page == Page::kRecall && clip == -1);
-    assert(VoiceCommand(m, "play", -1, clip) && clip == 10 && m.page == Page::kRecall);
-    assert(VoiceCommand(m, "previous", -1, clip) && m.line == 1 && clip == -1);
-    assert(!VoiceCommand(m, "answer", 0, clip) && m.page == Page::kRecall && m.line == 1);
-    assert(!VoiceCommand(m, "erase", -1, clip) && m.page == Page::kRecall);
-    assert(!VoiceCommand(m, "english", 4, clip) && m.page == Page::kRecall);
+    // 已移除的命令和越界索引必须拒绝，且不改变当前词卡。
+    for (const char* action : {"poem", "recall", "erase"}) {
+        assert(!VoiceCommand(m, action, 1, clip));
+        assert(m.page == Page::kWord && m.word == 0 && clip == -1);
+    }
+    for (int index : {-2, 4}) {
+        assert(!VoiceCommand(m, "english", index, clip));
+        assert(m.page == Page::kWord && m.word == 0);
+    }
+    assert(VoiceCommand(m, "previous", -1, clip) && m.word == 3 && clip == 3);
+    assert(VoiceCommand(m, "play", -1, clip) && clip == 3);
+    assert(!VoiceCommand(m, "answer", 0, clip) && m.page == Page::kWord);
+    assert(VoiceCommand(m, "quiz", -1, clip) && clip == 4 && m.round == 0);
+    assert(!VoiceCommand(m, "answer", 2, clip) && !m.answered && m.choice == 0);
     assert(VoiceCommand(m, "home", -1, clip) && m.page == Page::kHome);
     assert(!VoiceCommand(m, "play", -1, clip));
     puts(
-        "PASS: voice commands, invalid inputs, word/poem selection, four quiz rounds, retry, "
-        "hidden recall and hints.");
+        "PASS: English voice commands, rejected legacy/invalid commands, four quiz rounds and "
+        "retry.");
 }

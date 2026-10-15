@@ -33,6 +33,8 @@ void LearningUi::Show(Page entry) {
     chat_mode_ = false;
     voice_control_ = false;
     return_requested_ = false;
+    return_deadline_ = 0;
+    force_close_sent_ = false;
     model_.page = entry;
     active_ = true;
     Render();
@@ -56,7 +58,7 @@ void LearningUi::Render() {
                          : state == kDeviceStateListening  ? "小智在听"
                          : state == kDeviceStateConnecting ? "连接小智"
                                                            : "小智陪学";
-    learning::Render(screen_, model_, last_volume_, speaking_, status);
+    renderer_.Render(screen_, model_, last_volume_, speaking_, status);
 }
 void LearningUi::SavePosition() {
     if (!dirty_)
@@ -69,6 +71,7 @@ void LearningUi::CancelAudio() {
     std::lock_guard<std::mutex> guard(audio_mutex_);
     ++generation_;
     pending_clip_ = -1;
+    pending_local_clip_ = -1;
     feeding_.store(false);
     if (speaking_)
         Application::GetInstance().GetAudioService().ResetDecoder();
@@ -112,16 +115,17 @@ void LearningUi::AudioWorker() {
                 // Queue capacity is owned by AudioService; retry only on this worker.
                 // Guard generation and nonblocking enqueue together so cancellation
                 // cannot reset the decoder and then receive a stale local packet.
+                auto packet = std::make_unique<AudioStreamPacket>();
+                packet->sample_rate = rate;
+                packet->frame_duration = duration;
+                packet->payload.assign(data, data + size);
                 for (;;) {
                     {
                         std::lock_guard<std::mutex> guard(audio_mutex_);
                         if (generation != generation_)
                             return;
-                        auto packet = std::make_unique<AudioStreamPacket>();
-                        packet->sample_rate = rate;
-                        packet->frame_duration = duration;
-                        packet->payload.assign(data, data + size);
-                        if (audio.PushPacketToDecodeQueue(std::move(packet), false))
+                        // A full queue retains ownership, so retries reuse the payload.
+                        if (audio.TryPushPacketToDecodeQueue(packet))
                             return;
                     }
                     vTaskDelay(pdMS_TO_TICKS(10));
@@ -147,8 +151,10 @@ void LearningUi::HandleButton(Button button, Press press) {
     if (model_.page == Page::kHome && button == Button::kOk && press == Press::kLongPress) {
         auto& app = Application::GetInstance();
         if (voice_control_) {
+            CancelAudio();
+            if (!return_requested_)
+                abort_sent_ = close_sent_ = false;
             return_requested_ = true;
-            abort_sent_ = close_sent_ = false;
             Tick();
             return;
         }
@@ -177,15 +183,15 @@ void LearningUi::HandleButton(Button button, Press press) {
         if (voice_control_) {
             // Finish cloud playback/channel before playing a physical-key request.
             pending_local_clip_ = clip;
+            if (!return_requested_)
+                abort_sent_ = close_sent_ = false;
             return_requested_ = true;
-            abort_sent_ = close_sent_ = false;
         } else
             Speak(clip);
     }
     Render();
     ESP_LOGI("LearningUi", "v1.2 page=%d word=%d round=%d choice=%d correct=%d clip=%d",
-             int(model_.page), model_.word, model_.round, model_.choice,
-             model_.answered, clip);
+             int(model_.page), model_.word, model_.round, model_.choice, model_.answered, clip);
 }
 void LearningUi::ReturnToLearning() {
     if (!chat_mode_)
@@ -200,6 +206,14 @@ void LearningUi::Tick() {
     const auto state = Application::GetInstance().GetDeviceState();
     if (return_requested_) {
         auto& app = Application::GetInstance();
+        if (return_deadline_ == 0) {
+            return_deadline_ = esp_timer_get_time() + 2000000;
+        }
+        if (state != kDeviceStateIdle && esp_timer_get_time() >= return_deadline_ &&
+            !force_close_sent_) {
+            force_close_sent_ = true;
+            app.EndConversation();
+        }
         if (state == kDeviceStateSpeaking && !abort_sent_) {
             abort_sent_ = true;
             app.AbortSpeaking(kAbortReasonNone);

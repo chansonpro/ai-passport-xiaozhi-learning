@@ -1,8 +1,10 @@
 #include "websocket_protocol.h"
 #include "application.h"
 #include "board.h"
+#include "protocol_audio_params.h"
 #include "settings.h"
 #include "system_info.h"
+#include "websocket_audio_frame.h"
 
 #include <esp_log.h>
 #include <arpa/inet.h>
@@ -12,9 +14,23 @@
 
 #define TAG "WS"
 
+static_assert(sizeof(BinaryProtocol2) == 16);
+static_assert(sizeof(BinaryProtocol3) == 4);
+
 WebsocketProtocol::WebsocketProtocol() { event_group_handle_ = xEventGroupCreate(); }
 
-WebsocketProtocol::~WebsocketProtocol() { vEventGroupDelete(event_group_handle_); }
+WebsocketProtocol::~WebsocketProtocol() {
+    ResetConnection();
+    vEventGroupDelete(event_group_handle_);
+}
+
+void WebsocketProtocol::ResetConnection() {
+    ++connection_generation_;
+    awaiting_hello_ = false;
+    // @CfSecAICode 遵循消费金融安全编码 SEC-MEM-001 规范: 先释放回调源，再释放事件组。
+    websocket_.reset();
+    xEventGroupClearBits(event_group_handle_, WEBSOCKET_PROTOCOL_SERVER_HELLO_EVENT);
+}
 
 bool WebsocketProtocol::Start() {
     // Only connect to server when audio channel is needed
@@ -73,10 +89,19 @@ bool WebsocketProtocol::IsAudioChannelOpened() const {
 
 void WebsocketProtocol::CloseAudioChannel(bool send_goodbye) {
     (void)send_goodbye;  // Websocket doesn't need to send goodbye message
-    websocket_.reset();
+    const bool had_connection = websocket_ != nullptr;
+    ResetConnection();
+    if (had_connection && on_audio_channel_closed_ != nullptr) {
+        on_audio_channel_closed_();
+    }
 }
 
 bool WebsocketProtocol::OpenAudioChannel() {
+    ResetConnection();
+    session_id_.clear();
+    server_sample_rate_ = 24000;
+    server_frame_duration_ = 60;
+    const uint32_t generation = connection_generation_.load();
     Settings settings("websocket", false);
     std::string url = settings.GetString("url");
     std::string token = settings.GetString("token");
@@ -105,38 +130,23 @@ bool WebsocketProtocol::OpenAudioChannel() {
     websocket_->SetHeader("Device-Id", SystemInfo::GetMacAddress().c_str());
     websocket_->SetHeader("Client-Id", Board::GetInstance().GetUuid().c_str());
 
-    websocket_->OnData([this](const char* data, size_t len, bool binary) {
+    websocket_->OnData([this, generation](const char* data, size_t len, bool binary) {
+        if (generation != connection_generation_.load()) {
+            return;
+        }
         if (binary) {
             if (on_incoming_audio_ != nullptr) {
-                if (version_ == 2) {
-                    BinaryProtocol2* bp2 = (BinaryProtocol2*)data;
-                    bp2->version = ntohs(bp2->version);
-                    bp2->type = ntohs(bp2->type);
-                    bp2->timestamp = ntohl(bp2->timestamp);
-                    bp2->payload_size = ntohl(bp2->payload_size);
-                    auto payload = (uint8_t*)bp2->payload;
-                    on_incoming_audio_(std::make_unique<AudioStreamPacket>(AudioStreamPacket{
-                        .sample_rate = server_sample_rate_,
-                        .frame_duration = server_frame_duration_,
-                        .timestamp = bp2->timestamp,
-                        .payload = std::vector<uint8_t>(payload, payload + bp2->payload_size)}));
-                } else if (version_ == 3) {
-                    BinaryProtocol3* bp3 = (BinaryProtocol3*)data;
-                    bp3->type = bp3->type;
-                    bp3->payload_size = ntohs(bp3->payload_size);
-                    auto payload = (uint8_t*)bp3->payload;
-                    on_incoming_audio_(std::make_unique<AudioStreamPacket>(AudioStreamPacket{
-                        .sample_rate = server_sample_rate_,
-                        .frame_duration = server_frame_duration_,
-                        .timestamp = 0,
-                        .payload = std::vector<uint8_t>(payload, payload + bp3->payload_size)}));
-                } else {
-                    on_incoming_audio_(std::make_unique<AudioStreamPacket>(AudioStreamPacket{
-                        .sample_rate = server_sample_rate_,
-                        .frame_duration = server_frame_duration_,
-                        .timestamp = 0,
-                        .payload = std::vector<uint8_t>((uint8_t*)data, (uint8_t*)data + len)}));
+                WebsocketAudioFrame frame;
+                if (!ParseWebsocketAudioFrame(data, len, version_, frame)) {
+                    ESP_LOGW(TAG, "Invalid binary audio frame: version=%d, size=%zu", version_,
+                             len);
+                    return;
                 }
+                on_incoming_audio_(std::make_unique<AudioStreamPacket>(AudioStreamPacket{
+                    .sample_rate = server_sample_rate_,
+                    .frame_duration = server_frame_duration_,
+                    .timestamp = frame.timestamp,
+                    .payload = std::vector<uint8_t>(frame.payload, frame.payload + frame.size)}));
             }
         } else {
             // Parse JSON data
@@ -158,7 +168,10 @@ bool WebsocketProtocol::OpenAudioChannel() {
         last_incoming_time_ = std::chrono::steady_clock::now();
     });
 
-    websocket_->OnDisconnected([this]() {
+    websocket_->OnDisconnected([this, generation]() {
+        if (generation != connection_generation_.load()) {
+            return;
+        }
         ESP_LOGI(TAG, "Websocket disconnected");
         if (on_audio_channel_closed_ != nullptr) {
             on_audio_channel_closed_();
@@ -169,13 +182,16 @@ bool WebsocketProtocol::OpenAudioChannel() {
     if (auto connected = websocket_->Connect(url.c_str()); !connected) {
         ESP_LOGE(TAG, "Failed to connect to websocket server: %s",
                  connected.error().ToString().c_str());
+        ResetConnection();
         SetError(Lang::Strings::SERVER_NOT_CONNECTED, url);
         return false;
     }
 
     // Send hello message to describe the client
     auto message = GetHelloMessage();
+    awaiting_hello_ = true;
     if (!SendText(message)) {
+        ResetConnection();
         return false;
     }
 
@@ -185,6 +201,7 @@ bool WebsocketProtocol::OpenAudioChannel() {
                             pdFALSE, pdMS_TO_TICKS(10000));
     if (!(bits & WEBSOCKET_PROTOCOL_SERVER_HELLO_EVENT)) {
         ESP_LOGE(TAG, "Failed to receive server hello");
+        ResetConnection();
         SetError(Lang::Strings::SERVER_TIMEOUT);
         return false;
     }
@@ -223,29 +240,31 @@ std::string WebsocketProtocol::GetHelloMessage() {
 }
 
 void WebsocketProtocol::ParseServerHello(const cJSON* root) {
+    if (!awaiting_hello_) {
+        return;
+    }
     auto transport = cJSON_GetObjectItem(root, "transport");
-    if (transport == nullptr || strcmp(transport->valuestring, "websocket") != 0) {
-        ESP_LOGE(TAG, "Unsupported transport: %s", transport->valuestring);
+    // @CfSecAICode 遵循消费金融安全编码 SEC-MEM-001 规范: 校验 JSON 类型后才能读取字符串。
+    if (!cJSON_IsString(transport) || strcmp(transport->valuestring, "websocket") != 0) {
+        ESP_LOGE(TAG, "Unsupported or missing transport");
         return;
     }
 
     auto session_id = cJSON_GetObjectItem(root, "session_id");
-    if (cJSON_IsString(session_id)) {
-        session_id_ = session_id->valuestring;
-        ESP_LOGI(TAG, "Session ID: %s", session_id_.c_str());
+    if (session_id != nullptr && !cJSON_IsString(session_id)) {
+        ESP_LOGE(TAG, "Invalid session ID");
+        return;
+    }
+    int sample_rate = 24000;
+    int frame_duration = 60;
+    if (!ParseProtocolAudioParameters(root, sample_rate, frame_duration)) {
+        ESP_LOGE(TAG, "Unsupported audio parameters");
+        return;
     }
 
-    auto audio_params = cJSON_GetObjectItem(root, "audio_params");
-    if (cJSON_IsObject(audio_params)) {
-        auto sample_rate = cJSON_GetObjectItem(audio_params, "sample_rate");
-        if (cJSON_IsNumber(sample_rate)) {
-            server_sample_rate_ = sample_rate->valueint;
-        }
-        auto frame_duration = cJSON_GetObjectItem(audio_params, "frame_duration");
-        if (cJSON_IsNumber(frame_duration)) {
-            server_frame_duration_ = frame_duration->valueint;
-        }
-    }
-
+    session_id_ = cJSON_IsString(session_id) ? session_id->valuestring : "";
+    server_sample_rate_ = sample_rate;
+    server_frame_duration_ = frame_duration;
+    awaiting_hello_ = false;
     xEventGroupSetBits(event_group_handle_, WEBSOCKET_PROTOCOL_SERVER_HELLO_EVENT);
 }
